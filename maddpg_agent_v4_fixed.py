@@ -30,7 +30,6 @@ UPDATES_PER_STEP = 1           # one gradient step per learn
 POLICY_DELAY     = 1           # no delay (simpler)
 
 WARMUP_STEPS     = 10000       # collect diverse data first
-LEARN_AFTER_STEPS= 5000
 
 # OU noise (keep exploration alive; no decay by default)
 OU_MU            = 0.0
@@ -172,27 +171,35 @@ class DDPG:
 
 class MADDPG:
     """Two decentralized actors + per-agent centralized critics (simplified)."""
-    def __init__(self, state_size, action_size, num_agents=2, random_seed=0, noise_decay=1.0, t_stop_noise=30000, noise_start=1.0):
+    def __init__(self, action_size=2, seed=0, 
+                 n_agents=2,
+                 buffer_size=10000,
+                 batch_size=256,
+                 gamma=0.99,
+                 update_every=2,
+                 noise_start=1.0,
+                 noise_decay=1.0,
+                 t_stop_noise=30000): 
         #assert num_agents == 2, "This implementation is specialized for 2 agents."
         
-        self.state_size = state_size
+        self.buffer_size = buffer_size
         self.action_size = action_size
-        self.num_agents = num_agents
-        self.batch_size = BATCH_SIZE
-        self.gamma = GAMMA
-        self.n_agents = num_agents
+        self.batch_size = batch_size
+        self.gamma = gamma
+        self.n_agents = n_agents
         self.noise_on = True
         self.noise_decay = noise_decay
         self.t_stop_noise = t_stop_noise
         self.noise_weight = noise_start
+        self.update_every = update_every
 
-        random.seed(random_seed); np.random.seed(random_seed); torch.manual_seed(random_seed)
+        random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
-        models = [DDPG_Models(num_agents) for _ in range(num_agents)]
-        self.agents = [DDPG(i, models[i], action_size, random_seed) for i in range(num_agents)]
+        models = [DDPG_Models(self.n_agents) for _ in range(self.n_agents)]
+        self.agents = [DDPG(i, models[i], action_size, seed) for i in range(self.n_agents)]
 
-        self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, random_seed)
-        self.noise  = [OUNoise(action_size, random_seed) for _ in range(num_agents)]
+        self.memory = ReplayBuffer(self.buffer_size, self.batch_size, seed)
+        self.noise  = [OUNoise(action_size, seed) for _ in range(self.n_agents)]
 
         self.t_step = 0
         self.total_steps = 0
@@ -228,29 +235,32 @@ class MADDPG:
 
         # learn on schedule
         self.t_step = (self.t_step + 1) # % UPDATE_EVERY
-
-        if self.t_step % UPDATE_EVERY == 0:
+        
+        if self.t_step % self.update_every == 0:
             if len(self.memory) > self.batch_size:
-                experiences = [self.memory.sample() for _ in range(self.n_agents)]
+                experiences = self.memory.sample()
                 self.learn(experiences, self.gamma)
 
     def learn(self, experiences, gamma):
         all_next_actions = []
         all_actions = []
-
+        states, actions, rewards, next_states, dones = experiences  # Single shared batch
         for i, agent in enumerate(self.agents):
-            states, actions, rewards, next_states, dones = experiences[i]
             agent_id = torch.tensor([i]).to(device)
-            # get agent state and actions
-            state = states.reshape(-1, 2, 24).index_select(1, agent_id).squeeze(1)
+            state = states.reshape(-1, self.n_agents, 24).index_select(1, agent_id).squeeze(1)  # Adjust for n_agents
             action = agent.actor_local(state)
             all_actions.append(action)
-            next_state = next_states.reshape(-1, 2, 24).index_select(1, agent_id).squeeze(1)
+            next_state = next_states.reshape(-1, self.n_agents, 24).index_select(1, agent_id).squeeze(1)
             next_action = agent.actor_target(next_state)
             all_next_actions.append(next_action)
-
         for i, agent in enumerate(self.agents):
-            agent.learn( i, experiences[i], GAMMA, all_next_actions, all_actions)
+            agent.learn(i, experiences, gamma, all_next_actions, all_actions)
+
+    def save_agents(self):
+        # save models for local actor and critic of each agent
+        for i, agent in enumerate(self.agents):
+            torch.save(agent.actor_local.state_dict(),  f"checkpoint_actor_agent_{i}.pth")
+            torch.save(agent.critic_local.state_dict(), f"checkpoint_critic_agent_{i}.pth")
  
             
 
