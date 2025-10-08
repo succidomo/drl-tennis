@@ -19,14 +19,12 @@ BUFFER_SIZE      = 10000
 BATCH_SIZE       = 256
 GAMMA            = 0.99
 TAU              = 1e-3        # slow target updates
-LR_ACTOR         = 1e-4
-LR_CRITIC        = 1e-3
+LR_ACTOR         = 5e-5
+LR_CRITIC        = 5e-4
 WEIGHT_DECAY     = 0.0
-CRITIC_CLIP_NORM = 1.0
-ACTOR_CLIP_NORM  = None
 
 UPDATE_EVERY     = 2           # learn once every 2 env steps
-UPDATES_PER_STEP = 1           # one gradient step per learn
+UPDATES_PER_STEP = 2           # one gradient step per learn
 POLICY_DELAY     = 1           # no delay (simpler)
 
 WARMUP_STEPS     = 10000       # collect diverse data first
@@ -196,6 +194,8 @@ class MADDPG:
         random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
 
         models = [DDPG_Models(self.n_agents) for _ in range(self.n_agents)]
+        #shared_models = DDPG_Models(self.n_agents)
+
         self.agents = [DDPG(i, models[i], action_size, seed) for i in range(self.n_agents)]
 
         self.memory = ReplayBuffer(self.buffer_size, self.batch_size, seed)
@@ -238,8 +238,12 @@ class MADDPG:
         
         if self.t_step % self.update_every == 0:
             if len(self.memory) > self.batch_size:
-                experiences = self.memory.sample()
-                self.learn(experiences, self.gamma)
+                for _ in range(UPDATES_PER_STEP):  # Set UPDATES_PER_STEP=2 or 3
+                    if len(self.memory) < BATCH_SIZE:  # Inner guard (optional but safe)
+                        break
+                    experiences = self.memory.sample()  # Single shared sample
+                    self.learn(experiences, self.gamma)
+
 
     def learn(self, experiences, gamma):
         all_next_actions = []
